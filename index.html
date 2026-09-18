@@ -31506,9 +31506,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.42.3';
+const APP_VERSION = '5.42.4';
 
 const CHANGELOG = [
+  {
+    version: '5.42.4',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🔒', text: "Correctif sécurité important : changer d'entreprise consultée depuis le Mode Développeur repart désormais toujours d'un état local strictement vierge — avant, les chantiers (et autres données) ajoutés sous une entreprise restaient visibles après avoir basculé vers une autre entreprise via le sélecteur, tant qu'on ne se déconnectait pas complètement" },
+    ],
+  },
   {
     version: '5.42.3',
     date: '18/09/2026',
@@ -41654,7 +41661,20 @@ function _renderDevCompanyActiveStatus(){
     : `<div class="hint">Aucune entreprise sélectionnée — choisis un code ci-dessous pour consulter ses données (Comptes, Pointages, Chantiers, Alertes…).</div>`;
 }
 
+/* v5.42.4 — CORRECTIF SÉCURITÉ : changer d'entreprise consultée doit
+   TOUJOURS repartir d'un état local strictement vierge (seedData()), pas
+   seulement changer companyCode. Sans ça, l'onglet "Chantier" normal (et
+   Contacts, Itinéraires, etc.) continue d'afficher les données de l'ancienne
+   entreprise — ces onglets lisent data.sites/data.contacts/... directement
+   en mémoire locale, JAMAIS via le réseau, donc rien ne les rafraîchit
+   automatiquement quand seul companyCode change. Seuls les onglets du Mode
+   Développeur (Comptes/Pointages/Chantiers/...) rechargent réellement depuis
+   le serveur à chaque bascule — d'où l'illusion d'une fuite de données entre
+   entreprises alors que c'était juste de l'ancien contenu local jamais
+   nettoyé. Ce reset local ne supprime évidemment rien côté serveur : chaque
+   entreprise garde ses propres données, cloisonnées par le gateway. */
 async function devConsultCompany(code){
+  seedData();
   if(!data.settings) data.settings = { weeklyHours: 35 };
   data.settings.companyCode = String(code||'').trim().toUpperCase();
   saveData();
@@ -41662,9 +41682,11 @@ async function devConsultCompany(code){
   _renderDevCompanyActiveStatus();
   renderDevCompaniesList();
   if(typeof refreshDevPanel === 'function') refreshDevPanel();
+  if(typeof renderSites === 'function') renderSites();
 }
 
 function devStopConsultingCompany(){
+  seedData();
   if(!data.settings) data.settings = { weeklyHours: 35 };
   data.settings.companyCode = '';
   saveData();
@@ -41672,6 +41694,7 @@ function devStopConsultingCompany(){
   _renderDevCompanyActiveStatus();
   renderDevCompaniesList();
   if(typeof refreshDevPanel === 'function') refreshDevPanel();
+  if(typeof renderSites === 'function') renderSites();
 }
 
 async function renderDevCompaniesList(){
