@@ -8316,6 +8316,22 @@ function mergeAttendanceGranular(localAtt, remoteAtt){
 
 function mergeSyncedData(local, remote){
   const merged = Object.assign({}, local, remote);
+  // v5.42.8 — CORRECTIF CRITIQUE : locked/lockPin/autoLock sont un état PAR
+  // APPAREIL (est-ce que CET appareil est actuellement verrouillé ?), jamais
+  // un état de compte à synchroniser. Avant ce correctif, merged.settings
+  // héritait de remote.settings EN BLOC (voir plus bas — le garde-fou
+  // "if(!merged.settings)" ne se déclenchait quasiment jamais puisque
+  // merged.settings était déjà non-vide dès la ligne au-dessus), donc
+  // auth.locked venait TOUJOURS de la dernière valeur poussée au cloud —
+  // par N'IMPORTE QUEL appareil. Comme saveData() pousse automatiquement
+  // (debouncedSyncPush) à chaque sauvegarde, y compris lors d'une
+  // déconnexion (locked:true), et que syncPull() tourne automatiquement à
+  // chaque démarrage ET toutes les 15s (startSyncPolling), UNE SEULE
+  // déconnexion n'importe où finissait par reverrouiller l'app sur TOUS les
+  // appareils à chaque prochaine synchronisation — même sans jamais cliquer
+  // sur "Se déconnecter" sur CET appareil. On fige donc ces 3 champs sur
+  // leur valeur LOCALE avant de fusionner, quel que soit ce que dit le cloud.
+  const localAuthLock = (local.settings && local.settings.auth) || {};
   merged.logs = mergeLogsPreservingLocalPhotos(local.logs, remote.logs);
   merged.trash = mergeTrashPreservingLocalPhotos(local.trash, remote.trash);
   // Fusion granulaire par ID unique (uid) : un site/ouvrier/article/tuile ajouté ou
@@ -8349,6 +8365,16 @@ function mergeSyncedData(local, remote){
       liens:  Object.assign({}, ro.liens||{},  lo.liens||{}),
       ajouts: Object.values(ajoutsMap)
     };
+  }
+  // v5.42.8 — voir la note en haut de cette fonction : locked/lockPin/autoLock
+  // ne viennent JAMAIS du cloud, quel que soit le chemin de fusion emprunté
+  // ci-dessus pour merged.settings. Appliqué en tout dernier pour ne pas
+  // pouvoir être re-écrasé par un des blocs précédents.
+  if(merged.settings){
+    if(!merged.settings.auth) merged.settings.auth = {};
+    merged.settings.auth.locked = !!localAuthLock.locked;
+    merged.settings.auth.lockPin = (localAuthLock.lockPin != null) ? localAuthLock.lockPin : null;
+    merged.settings.auth.autoLock = !!localAuthLock.autoLock;
   }
   return merged;
 }
@@ -8810,6 +8836,16 @@ async function syncPush(){
     const _myRole = data.settings.myProfile && data.settings.myProfile.role;
     const _canPushTeam = (_myRole === 'chef' || _myRole === 'conducteur' || _myRole === 'patron');
     const stripped = stripBlobsForSync(data);
+    // v5.42.8 — locked/lockPin/autoLock sont un état PAR APPAREIL (voir la
+    // note détaillée dans mergeSyncedData()) : on ne les pousse plus du tout
+    // au cloud, pour qu'aucun appareil ne puisse jamais en hériter, même via
+    // un chemin qui lirait les données distantes brutes sans repasser par
+    // mergeSyncedData() (ex : changement de compte sur un device neuf).
+    if(stripped.settings && stripped.settings.auth){
+      delete stripped.settings.auth.locked;
+      delete stripped.settings.auth.lockPin;
+      delete stripped.settings.auth.autoLock;
+    }
 
     if(_canPushTeam){
       // Chef/conducteur/patron : on pousse TOUS les pointages saisis sur cet
@@ -31542,9 +31578,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.42.7';
+const APP_VERSION = '5.42.8';
 
 const CHANGELOG = [
+  {
+    version: '5.42.8',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🔒', text: "Correctif critique : la session se reverrouillait automatiquement toute seule au bout d'un moment, même sans jamais cliquer sur \"Se déconnecter\" — causé par la synchronisation cloud (tournant en tâche de fond toutes les 15s) qui réimportait un ancien état \"verrouillé\" depuis le serveur. L'état de verrouillage de l'appareil ne vient plus jamais du cloud : il reste désormais strictement local, la session reste connectée jusqu'à un clic explicite sur \"Se déconnecter\" dans Paramètres, comme prévu en v5.42.7." },
+    ],
+  },
   {
     version: '5.42.7',
     date: '18/09/2026',
