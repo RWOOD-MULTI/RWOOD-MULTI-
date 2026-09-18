@@ -4036,6 +4036,11 @@
       <label>Mot de passe</label>
       <input type="password" id="authLoginPwd" placeholder="Date de naissance (JJMMAAAA)" inputmode="numeric" autocomplete="current-password">
     </div>
+    <div class="field" id="authLoginCompanyCodeField" style="display:none;">
+      <label>Code Entreprise <span style="color:var(--red);">*</span></label>
+      <input type="text" id="authLoginCompanyCode" placeholder="Donné par ton patron ou le développeur" maxlength="10" style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
+      <div class="hint" style="margin-top:4px;">Nécessaire uniquement sur un nouvel appareil (pas encore associé à ton entreprise).</div>
+    </div>
     <div class="hint" id="authLoginError" style="color:var(--danger); display:none; margin-bottom:10px;"></div>
     <button class="btn btn-primary btn-block" onclick="attemptAuthLogin()">Se connecter</button>
     <button class="btn btn-outline btn-block" id="authLoginBackBtn" style="margin-top:10px;" onclick="showAuthWelcome()">← Retour</button>
@@ -4068,10 +4073,9 @@
       <input type="text" id="authCompany" placeholder="Ex : RWOOD Charpente">
     </div>
     <div class="field">
-      <div class="field" style="display:none;">
-        <label>Code Entreprise <span style="color:var(--ink-soft); font-weight:400;">(optionnel)</span></label>
-        <input type="text" id="authCompanyCode" placeholder="Donné par ton patron, si tu en as un" style="text-transform:uppercase;">
-      </div>
+      <label>Code Entreprise <span style="color:var(--red);">*</span></label>
+      <input type="text" id="authCompanyCode" placeholder="Donné par ton patron ou le développeur" maxlength="10" style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase(); document.getElementById('authCompanyCodeStatus').textContent='';">
+      <div id="authCompanyCodeStatus" class="hint" style="margin-top:4px;"></div>
     </div>
     <div class="field" style="margin-bottom:0;">
       <label>Rôle</label>
@@ -8456,7 +8460,24 @@ function getSupaUserId(){
     : null;
 }
 
+/* v5.42.0 — Code entreprise du device courant (mode multi-entreprise).
+   Toutes les clés rwood_sync sont désormais cloisonnées par ce code (sauf
+   les 2 clés globales gérées par la Edge Function — registre des
+   entreprises, liste des comptes dev). Voir _supaSyncGateway(). */
+function getCompanyCode(){
+  return (data && data.settings && data.settings.companyCode)
+    ? String(data.settings.companyCode).trim().toUpperCase()
+    : '';
+}
+
 async function supaFetch(path, options={}){
+  // v5.42.0 — tout accès à rwood_sync passe désormais par la Edge Function
+  // sync-gateway (jamais plus un accès direct à la table, verrouillée côté
+  // RLS) : elle applique le cloisonnement multi-entreprise. Traduction
+  // transparente : aucun appelant existant n'a besoin d'être modifié.
+  if(path.indexOf('/rest/v1/rwood_sync') === 0){
+    return _supaSyncGateway(path, options);
+  }
   const res = await fetch(SUPA_URL + path, {
     ...options,
     headers: {
@@ -8468,6 +8489,92 @@ async function supaFetch(path, options={}){
     }
   });
   return res;
+}
+
+/* Imite juste assez l'objet Response de fetch() (ok, status, json()) pour
+   que tout le code existant (res.ok, await res.json() → tableau de lignes)
+   continue de fonctionner sans la moindre modification. */
+function _fakeSyncResponse(ok, status, jsonBody){
+  return { ok, status, json: async () => jsonBody };
+}
+
+async function _supaGatewayCall(body){
+  return fetch(SUPA_URL + '/functions/v1/sync-gateway', {
+    method: 'POST',
+    headers: {
+      'apikey': SUPA_KEY,
+      'Authorization': 'Bearer ' + SUPA_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+}
+
+/* v5.42.0 — Traduit les anciens appels au format PostgREST direct
+   (?user_id=eq./like., POST upsert, DELETE) vers le format attendu par la
+   Edge Function sync-gateway, qui applique le cloisonnement par code
+   entreprise. Comprend les 4 formes réellement utilisées dans l'app :
+   GET user_id=eq.<clé>, GET user_id=like.<préfixe>%, POST (upsert), DELETE
+   user_id=eq.<clé>. */
+async function _supaSyncGateway(path, options){
+  const method = (options.method || 'GET').toUpperCase();
+  const qIdx = path.indexOf('?');
+  const query = qIdx >= 0 ? path.slice(qIdx+1) : '';
+  const params = new URLSearchParams(query);
+  const company = getCompanyCode();
+
+  try{
+    if(method === 'POST'){
+      const body = JSON.parse(options.body || '{}');
+      const rawKey = body.user_id;
+      const res = await _supaGatewayCall({
+        op: 'upsert', key: rawKey, company, devSecret: DEV_ACCESS_CODE,
+        data: body.data, updated_at: body.updated_at || new Date().toISOString()
+      });
+      return _fakeSyncResponse(res.ok, res.status, null);
+    }
+
+    if(method === 'DELETE'){
+      const uidParam = params.get('user_id') || '';
+      const rawKey = uidParam.indexOf('eq.') === 0 ? uidParam.slice(3) : null;
+      if(!rawKey) return _fakeSyncResponse(false, 400, null);
+      const res = await _supaGatewayCall({ op:'delete', key: rawKey, company, devSecret: DEV_ACCESS_CODE });
+      return _fakeSyncResponse(res.ok, res.status, null);
+    }
+
+    // GET (par défaut)
+    const uidParam = params.get('user_id') || '';
+    if(uidParam.indexOf('eq.') === 0){
+      const rawKey = uidParam.slice(3);
+      const res = await _supaGatewayCall({ op:'get', key: rawKey, company });
+      if(!res.ok) return _fakeSyncResponse(false, res.status, null);
+      const json = await res.json();
+      return _fakeSyncResponse(true, res.status, json.rows || []);
+    }
+    if(uidParam.indexOf('like.') === 0){
+      let rawPrefix = uidParam.slice(5);
+      if(rawPrefix.endsWith('%')) rawPrefix = rawPrefix.slice(0, -1);
+      const res = await _supaGatewayCall({ op:'get_prefix', prefix: rawPrefix, company });
+      if(!res.ok) return _fakeSyncResponse(false, res.status, null);
+      const json = await res.json();
+      return _fakeSyncResponse(true, res.status, json.rows || []);
+    }
+    return _fakeSyncResponse(false, 400, null);
+  } catch(e){
+    return _fakeSyncResponse(false, 0, null);
+  }
+}
+
+/* Vérifie auprès de la Edge Function qu'un code entreprise existe (saisi à
+   la création de compte). Retourne {valid, name} — ne bloque jamais si
+   hors-ligne/erreur réseau (retourne valid:false, le formulaire affichera
+   alors un message générique plutôt qu'un blocage silencieux). */
+async function _checkCompanyCode(code){
+  try{
+    const res = await _supaGatewayCall({ op:'check_code', code });
+    if(!res.ok) return { valid:false };
+    return await res.json();
+  } catch(e){ return { valid:false }; }
 }
 
 /* Déclenche une vraie notification système (push) chez un ou plusieurs
@@ -9582,8 +9689,11 @@ async function saveData(skipSync){
 }
 
 function seedData(){
-  // Données de base — contacts, itinéraires, chantiers et stock préconfigurés
-  const BASE = {"sites":[{"id":"id_43b4j0jnmqfe20ux","name":"Guanxi","color":"#D4B85A","status":"en-cours","tileId":"id_jgzetopgmqfpj8om","address":"19 allée des tilleuls Arcachon 33120","progress":0,"stockNeeds":{},"stockTaken":{},"trajetZone":"5","trajetDistanceKm":45.8},{"id":"id_0pdnlrkwmqfe20ux","name":"Marchal","color":"#A084CA","status":"a-faire","address":"3 chemin de rouhier bouliac 33270","progress":0,"stockNeeds":{},"stockTaken":{},"trajetZone":"2","trajetDistanceKm":14.9,"tileId":"id_jgzetopgmqfpj8om"},{"id":"id_7rnbhcrpmqfe20ux","name":"Dépôt","color":"#6FA37E","status":"en-cours","address":"135 Av. des Marronniers Merignac 33281","progress":0,"stockNeeds":{},"stockTaken":{},"trajetZone":"1A","trajetDistanceKm":0},{"id":"id_036xlyr2mqfe20ux","name":"Falgoux","color":"#7B9FD1","status":"en-cours","address":"18 avenue des galipes la Teste-de-buch","progress":0,"stockNeeds":{},"stockTaken":{},"trajetZone":"5","trajetDistanceKm":46.6},{"id":"id_g25djmmgmqhu09kp","name":"Blanckert","color":"rgba(90, 90, 90, 1)","status":"a-faire","address":"9 avenue jean Mermoz eysines","progress":0,"stockNeeds":{},"stockTaken":{},"trajetZone":"1B","trajetDistanceKm":4.7}],"workers":[],"stock":[{"id":"id_33e6dn29mqihntsd","qty":0,"name":"Lames de cutter 18mm","unit":"boîte","alert":0,"category":"consommables"},{"id":"id_vui4kea8mqihntsd","qty":0,"name":"Lames de cutter 25mm","unit":"boîte","alert":0,"category":"consommables"},{"id":"id_j08wtz96mqihntsd","qty":0,"name":"Lames de scie sauteuse","unit":"pièces","alert":0,"category":"consommables"},{"id":"id_i8stn1ftmqihntsd","qty":0,"name":"Lames de scie sabre","unit":"pièces","alert":0,"category":"consommables"},{"id":"id_fag9iwv2mqihntsd","qty":0,"name":"Lames de scie oscillante","unit":"pièces","alert":0,"category":"consommables"},{"id":"id_zcmb9g4zmqihntsd","qty":0,"name":"Porte-embout","unit":"pièces","alert":0,"category":"consommables"},{"id":"id_eqd23yuvmqihntsd","qty":0,"name":"Poudre cordex Bleue","unit":"boîte","alert":0,"category":"consommables"},{"id":"id_p81ngmfimqihntsd","qty":0,"name":"Poudre cordex Rouge","unit":"boîte","alert":0,"category":"consommables"},{"id":"id_mzgf66bnmqihntsd","qty":0,"name":"Crayon","unit":"pièces","alert":0,"category":"consommables"},{"id":"id_bltk7wljmqihntsd","qty":0,"name":"Mine de crayon","unit":"boîte","alert":0,"category":"consommables"},{"id":"id_bpg72o1smqihntsd","qty":0,"name":"Porte-mine","unit":"pièces","alert":0,"category":"consommables"},{"id":"id_9t02wf83mqixxy69","qty":0,"name":"Embout torx T10","unit":"pièces","alert":0,"category":"consommables"},{"id":"id_nve6842nmqiyj46k","qty":0,"name":"Mèche béton Ø6.5mm x 115mm","unit":"pièces","alert":0,"category":"consommables"},{"id":"id_fwhw1duzmqj3yewy","qty":1,"name":"Vis Ø4.5mm x 50mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_dlqjsws6mqj3z0be","qty":1,"name":"Vis Ø3.5mm x 20mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_1tx7c3zsmqj3zjbo","qty":1,"name":"Vis Ø4.5mm x 60mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_99m7x95amqj3zv54","qty":1,"name":"Vis Ø5mm x 120mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_xg3tmur2mqj40avj","qty":1,"name":"Vis Ø6mm x 140mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_1lvsxo1kmqj40umv","qty":1,"name":"Vis Ø6mm x 160mm","unit":"pièces","alert":0,"category":"quincaillerie"},{"id":"id_mdtc6jy1mqj41koa","qty":1,"name":"Pointe Ø4mm x 30mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_8etwrwh7mqj42fcn","qty":1,"name":"Goujon Ø10mm x 100mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_65ec4w6tmqj43xsp","qty":1,"name":"Vis Ø6mm x 240mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_n1g3cb6vmqj44b2w","qty":1,"name":"Vis Ø8mm x 160mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_eljb5jvymqj44vam","qty":1,"name":"Vis Ø8mm x 200mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_r6te5ingmqj45uth","qty":2,"name":"Vis Ø8mm x 240mm","unit":"boîte","alert":0,"category":"quincaillerie"},{"id":"id_q7undkoumqj46nsj","qty":1,"name":"Vis Ø8mm x 140mm","unit":"boîte","alert":0,"category":"quincaillerie"}],"favorites":[],"logs":[],"attendance":[],"settings":{"auth":{},"payInfo":{"coefficient":"","tauxHoraire":null},"storage":{"photoMode":"internal","backupMode":"ask","photoFolderName":"","backupFolderName":"","stockMode":"internal","stockFolderName":"","payslipsMode":"internal","payslipsFolderName":"","documentsMode":"internal","documentsFolderName":""},"navOrder":["chantiers","calcul","heures","contacts","stock","itineraires","agenda","couverture","photos","ferme","zinc"],"teamName":"","myProfile":{},"navHidden":["ferme","contacts"],"truckName":"Camion de Rémi","depotCoords":{"lat":44.845624,"lng":-0.68659},"weeklyHours":35,"depotAddress":"135 Av. des Marronniers Merignac 33281","trajetBareme":[{"zone":"1A","maxKm":4,"minKm":0,"trajet":0.74},{"zone":"1B","maxKm":10,"minKm":4,"trajet":1.67},{"zone":"2","maxKm":20,"minKm":10,"trajet":3.45},{"zone":"3","maxKm":30,"minKm":20,"trajet":4.9},{"zone":"4","maxKm":40,"minKm":30,"trajet":6.37},{"zone":"5","maxKm":50,"minKm":40,"trajet":7.88}]},"contacts":[{"id":"id_s23yphyfmqfe20ux","name":"Alban BCM","role":"OUVRIER BCM","color":"#6FA37E","email":"","phone":"+33769792071"},{"id":"id_2lebnek4mqfe20ux","name":"Baptiste BCM","role":"OUVRIER BCM","color":"#6FA37E","email":"","phone":"+33 6 58 40 42 25","favorite":true},{"id":"id_5hombyjvmqfe20ux","name":"Clement Bcm","role":"OUVRIER BCM","color":"#6FA37E","email":"","phone":"06 52 39 64 61"},{"id":"id_1hbt59ynmqfe20ux","name":"Guillaume BCM","role":"Chef équipe BCM","color":"#A084CA","email":"","phone":"0618996568"},{"id":"id_uqy1v01gmqfe20ux","name":"Julien Bcm","role":"Chef équipe BCM","color":"#A084CA","email":"","phone":"+33699090859"},{"id":"id_6nwr5phjmqfe20ux","name":"Kevin Brignole","role":"Aliénor habitat","color":"#E07A63","email":"","phone":"0615958007"},{"id":"id_1fhgown6mqfe20ux","name":"Kevin Maçons FCM","role":"Maçon","color":"#C17A3D","email":"","phone":"+33 6 68 87 09 47"},{"id":"id_jp3g5g75mqfe20ux","name":"Louis Bcm","role":"Conducteur de travaux","color":"#D17BA6","email":"","phone":"+33647150333"},{"id":"id_klcuoahnmqfe20ux","name":"Marianne BCM","role":"Comptable BCM","color":"#5FB4B8","email":"","phone":"+33628118460"},{"id":"id_k4fc7yzymqfe20ux","name":"Marwan BCM","role":"Chef équipe BCM","color":"#A084CA","email":"","phone":"0769259913"},{"id":"id_24anwq28mqfe20ux","name":"Mathias Bois Concept","role":"Patron","color":"#E07A63","email":"secretariat.boisconceptm@gmail.com","phone":"+33 6 58 54 24 43","favorite":true},{"id":"id_khd7ua2pmqfe20ux","name":"Mathieu Bois Concept M","role":"Conducteur de travaux","color":"#D17BA6","email":"","phone":"+33 7 81 25 04 26"},{"id":"id_7wafmtkcmqfe20ux","name":"Nicolas","role":"Carrossier aéroport","color":"#C17A3D","email":"","phone":"+33607119520"},{"id":"id_zvkr020vmqfe20ux","name":"Nicolas Halier","role":"Sous-traitant","color":"#5FB4B8","email":"","phone":"+33686551724"},{"id":"id_ebz7p3gnmqfe20ux","name":"Paul BCM","role":"Dessinateur BCM","color":"#D17BA6","email":"","phone":"+33750125625"},{"id":"id_xos8g0nbmqfe20ux","name":"Pierre BCM","role":"OUVRIER BCM","color":"#6FA37E","email":"","phone":"+33 6 15 90 72 17"},{"id":"id_7bx50tc8mqfe20ux","name":"Romain BCM","role":"Conducteur de travaux","color":"#D17BA6","email":"","phone":"+33612869074"},{"id":"id_ddgy660umqfe20ux","name":"Valentin BCM","role":"Conducteur de travaux","color":"#D17BA6","email":"valentinb@boisconceptm.com","phone":"0621005822","favorite":true},{"id":"id_qv2z51wmmqfe20ux","name":"william bcm","role":"OUVRIER BCM","color":"#6FA37E","email":"","phone":"+33680880831"},{"id":"id_uv3wg34tmqfe20ux","name":"Yaya","role":"OUVRIER BCM","color":"#6FA37E","email":"","phone":"+33620081559"},{"id":"id_w5z9dplrmqfe4ly3","name":"Jean","role":"Moi","color":"#C17A3D","email":"","phone":"","linkedWorkerId":"id_r7nf17kpmqfe4ly3"}],"customRoles":[],"collapsedRoles":[],"itineraries":[{"id":"id_3a0gknximqfe20ux","name":"Dépôt BCM","color":"rgba(0, 255, 74, 1)","address":"131 Av. des Marronniers Mérignac"},{"id":"id_ib1kz5ynmqfe20ux","name":"Setin","color":"rgba(220, 255, 0, 0.9926913091469374)","address":"Parc d'activités vert castel, 11 Av. de la Grande Semaine 2, 33700 Mérignac"},{"id":"id_8ckzyqinmqfe20ux","name":"Foussier Bègles","color":"rgba(255, 255, 255, 1)","address":"ZI de Tartifume, Rue Charles Tellier, 33130 Bègles"},{"id":"id_y01k2nnfmqfe20ux","name":"Foussier Mérignac","color":"rgba(255, 255, 255, 1)","address":"Parc d'activité Morandière, 3-5 Rue Copernic, 33185 Le Haillan"},{"id":"id_w0qp6hylmqfe20ux","name":"Maison","color":"#A084CA","address":"32 Rue De La Morandiere le Haillan 33185"},{"id":"id_olwv46enmqfe20ux","name":"Foussier La Teste-de-buch","color":"rgba(255, 255, 255, 1)","address":"90 Rue Marcel Dassault, 33260 La Teste-de-Buch"},{"id":"id_f1g7ktrymqfe20ux","name":"Veolia Mérignac","color":"rgba(19, 255, 0, 1)","address":"30 Rue André Dousse, 33700 Mérignac"},{"id":"id_ku55oa0gmqfe20ux","name":"Veolia Bègles","color":"rgba(19, 255, 0, 1)","address":"ZI de Tartifume, Rue Louis Blériot, 33130 Bègles"},{"id":"id_nf0pd8bwmqfe20ux","name":"M+ matériaux Mérignac","color":"rgba(0, 142, 255, 1)","address":"8 Av. Gustave Eiffel, 33700 Mérignac"},{"id":"id_c8070m9imqfe20ux","name":"Point P Mérignac","color":"rgba(255, 0, 0, 1)","address":"Rue Ferdinand de Lesseps, 33700 Mérignac"}],"tasks":[],"receivedFiches":[],"comptableSites":[],"tiles":[{"id":"id_epkfdtw4mqfoi4jr","ref":"","name":"DC 12","brand":"Terreal","dimensions":""},{"id":"id_jgzetopgmqfpj8om","ref":"","name":"Galeane 12","brand":"Monier","dimensions":""}],"payslips":[],"trash":[],"zincProfiles":[],"trucks":[]};
+  // v5.42.0 — mode multi-entreprise : plus de données pré-remplies d'une
+  // entreprise réelle (ancien jeu "Bois Concept M" retiré) — chaque
+  // nouveau compte/entreprise démarre d'un jeu strictement vide, quel que
+  // soit le code entreprise utilisé.
+  const BASE = {"sites":[],"workers":[],"stock":[],"favorites":[],"logs":[],"attendance":[],"settings":{"auth":{},"payInfo":{"coefficient":"","tauxHoraire":null},"storage":{"photoMode":"internal","backupMode":"ask","photoFolderName":"","backupFolderName":"","stockMode":"internal","stockFolderName":"","payslipsMode":"internal","payslipsFolderName":"","documentsMode":"internal","documentsFolderName":""},"navOrder":["chantiers","calcul","heures","contacts","stock","itineraires","agenda","couverture","photos","ferme","zinc"],"teamName":"","myProfile":{},"navHidden":["ferme","contacts"],"truckName":"","depotCoords":null,"weeklyHours":35,"depotAddress":"","trajetBareme":[{"zone":"1A","maxKm":4,"minKm":0,"trajet":0.74},{"zone":"1B","maxKm":10,"minKm":4,"trajet":1.67},{"zone":"2","maxKm":20,"minKm":10,"trajet":3.45},{"zone":"3","maxKm":30,"minKm":20,"trajet":4.9},{"zone":"4","maxKm":40,"minKm":30,"trajet":6.37},{"zone":"5","maxKm":50,"minKm":40,"trajet":7.88}]},"contacts":[],"customRoles":[],"collapsedRoles":[],"itineraries":[],"tasks":[],"receivedFiches":[],"comptableSites":[],"tiles":[],"payslips":[],"trash":[],"zincProfiles":[],"trucks":[]};
   Object.assign(data, BASE);
   // Protéger les données de compte — ne jamais les écraser avec les valeurs BASE vides
   if(!data.settings) data.settings = {};
@@ -27501,6 +27611,16 @@ function showAuthLoginForm(){
   document.getElementById('authLoginId').value = '';
   document.getElementById('authLoginPwd').value = '';
   document.getElementById('authLoginError').style.display = 'none';
+  // v5.42.0 — le code entreprise n'est demandé au login que si ce device
+  // n'en a pas déjà un enregistré localement (premier login sur un device
+  // neuf) : sinon on réutilise silencieusement celui déjà connu.
+  const codeField = document.getElementById('authLoginCompanyCodeField');
+  const codeInput = document.getElementById('authLoginCompanyCode');
+  if(codeField && codeInput){
+    const known = getCompanyCode();
+    codeField.style.display = known ? 'none' : 'block';
+    codeInput.value = '';
+  }
 }
 function showAuthCreateForm(){
   _authShowOnly('authCreateForm');
@@ -27601,6 +27721,7 @@ async function submitAuthCreate(){
   const newPwd = document.getElementById('authNewPwd').value.trim();
   const company = document.getElementById('authCompany').value.trim();
   const companyCode = document.getElementById('authCompanyCode').value.trim().toUpperCase();
+  const codeStatusEl = document.getElementById('authCompanyCodeStatus');
   if(!firstName || !lastName || !birthDate){
     showToast('Renseigne au moins le prénom, le nom et la date de naissance');
     return;
@@ -27609,6 +27730,30 @@ async function submitAuthCreate(){
     showToast('Choisis un mot de passe à exactement 8 chiffres');
     return;
   }
+  if(!companyCode){
+    showToast('Le code entreprise est obligatoire — demande-le à ton patron ou au développeur');
+    return;
+  }
+  if(!navigator.onLine){
+    showToast('Connexion internet nécessaire pour vérifier le code entreprise');
+    return;
+  }
+  // v5.42.0 — le code doit exister dans le registre des entreprises AVANT
+  // toute autre chose : c'est lui qui isole les données de cette entreprise
+  // de toutes les autres (voir _supaSyncGateway/sync-gateway). On l'assigne
+  // à data.settings.companyCode dès que validé, pour que TOUS les appels
+  // supaFetch suivants dans cette même fonction (ex: _authIdAlreadyExists)
+  // ciblent déjà le bon périmètre entreprise.
+  if(codeStatusEl){ codeStatusEl.textContent = 'Vérification du code…'; codeStatusEl.style.color = 'var(--ink-soft)'; }
+  const check = await _checkCompanyCode(companyCode);
+  if(!check.valid){
+    if(codeStatusEl){ codeStatusEl.textContent = 'Code entreprise inconnu — vérifie-le auprès de ton patron ou du développeur'; codeStatusEl.style.color = 'var(--red)'; }
+    return;
+  }
+  if(codeStatusEl){ codeStatusEl.textContent = '✓ ' + (check.name || 'Code valide'); codeStatusEl.style.color = 'var(--green, #4FAE6C)'; }
+  if(!data.settings) data.settings = { weeklyHours: 35 };
+  data.settings.companyCode = companyCode;
+
   const authId = buildAuthId(firstName, lastName);
 
   const alreadyExists = await _authIdAlreadyExists(authId);
@@ -27733,8 +27878,25 @@ function attemptAuthLogin(){
         errorEl.textContent = "Identifiant ou mot de passe incorrect";
         errorEl.style.display = 'block'; return;
       }
+      // v5.42.0 — si ce device n'a pas encore de code entreprise connu
+      // (premier login sur un device neuf), il est obligatoire ici : c'est
+      // lui qui détermine dans quel périmètre entreprise chercher le compte
+      // (voir _supaSyncGateway). S'il est déjà connu localement, on le
+      // réutilise silencieusement (champ masqué, voir showAuthLoginForm).
+      let wasFreshCompanyCodeGuess = false;
+      if(!getCompanyCode()){
+        const codeInput = document.getElementById('authLoginCompanyCode');
+        const loginCode = codeInput ? codeInput.value.trim().toUpperCase() : '';
+        if(!loginCode){
+          errorEl.textContent = "Le code entreprise est obligatoire sur un nouvel appareil";
+          errorEl.style.display = 'block'; return;
+        }
+        if(!data.settings) data.settings = { weeklyHours: 35 };
+        data.settings.companyCode = loginCode;
+        wasFreshCompanyCodeGuess = true;
+      }
       // Tenter de récupérer ce compte depuis Supabase
-      attemptAccountSwitch(inputId, inputPwd);
+      attemptAccountSwitch(inputId, inputPwd, wasFreshCompanyCodeGuess);
       return;
     }
   }
@@ -27752,16 +27914,25 @@ function attemptAuthLogin(){
   renderSites();
 }
 
-/* Changement de compte : cherche les données de l'autre utilisateur sur Supabase */
-async function attemptAccountSwitch(userId, pwd){
+/* Changement de compte : cherche les données de l'autre utilisateur sur Supabase.
+   wasFreshCompanyCodeGuess (v5.42.0) : true si le code entreprise utilisé pour
+   cette tentative vient d'être saisi à l'instant (device neuf) plutôt que
+   déjà connu de ce device — sur échec, on l'efface pour permettre de
+   réessayer avec un autre code au lieu de rester bloqué dessus. */
+async function attemptAccountSwitch(userId, pwd, wasFreshCompanyCodeGuess){
   const errorEl = document.getElementById('authLoginError');
   errorEl.textContent = "Recherche du compte sur le cloud…";
   errorEl.style.display = 'block';
   errorEl.style.color = 'var(--ink-soft)';
 
-  if(!navigator.onLine){
-    errorEl.textContent = "Pas de connexion — impossible de récupérer un autre compte sans internet";
+  const fail = (msg) => {
+    errorEl.textContent = msg;
     errorEl.style.color = 'var(--red)';
+    if(wasFreshCompanyCodeGuess && data.settings) data.settings.companyCode = '';
+  };
+
+  if(!navigator.onLine){
+    fail("Pas de connexion — impossible de récupérer un autre compte sans internet");
     return;
   }
 
@@ -27774,8 +27945,7 @@ async function attemptAccountSwitch(userId, pwd){
     const rows = await res.json();
 
     if(!rows || !rows.length || !rows[0].data){
-      errorEl.textContent = "Compte introuvable — aucune donnée dans le cloud pour " + userId;
-      errorEl.style.color = 'var(--red)';
+      fail("Compte introuvable — aucune donnée dans le cloud pour " + userId + " avec ce code entreprise");
       return;
     }
 
@@ -27784,8 +27954,7 @@ async function attemptAccountSwitch(userId, pwd){
 
     // Vérifier le mot de passe contre les données distantes
     if(remotePwd && pwd !== remotePwd){
-      errorEl.textContent = "Mot de passe incorrect";
-      errorEl.style.color = 'var(--red)';
+      fail("Mot de passe incorrect");
       return;
     }
 
@@ -27806,8 +27975,7 @@ async function attemptAccountSwitch(userId, pwd){
     showToast("Bienvenue " + userId + " — données récupérées depuis le cloud ✓");
 
   } catch(e){
-    errorEl.textContent = "Erreur lors de la récupération du compte — réessaie";
-    errorEl.style.color = 'var(--red)';
+    fail("Erreur lors de la récupération du compte — réessaie");
   }
 }
 
@@ -31306,9 +31474,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.90-vierge';
+const APP_VERSION = '5.42.0';
 
 const CHANGELOG = [
+  {
+    version: '5.42.0',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🏢', text: "Mode multi-entreprise : chaque appareil doit désormais saisir un code entreprise (fourni par le développeur) à la création du compte ou au premier login sur un nouvel appareil — les données de chaque entreprise sont totalement séparées des autres" },
+      { icon: '🔒', text: "Sécurité renforcée : tous les accès aux données passent maintenant par une fonction serveur dédiée qui vérifie le code entreprise, au lieu d'un accès direct à la base — empêche qu'une entreprise puisse voir les données d'une autre" },
+    ],
+  },
   {
     version: '5.41.90-vierge',
     date: '18/09/2026',
