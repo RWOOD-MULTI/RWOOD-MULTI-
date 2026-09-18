@@ -5972,6 +5972,7 @@
           <input type="text" id="devCompanyNameInput" placeholder="Nom de l'entreprise" style="flex:1; padding:10px 12px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink);">
           <button class="btn btn-primary" onclick="generateCompanyCode()">Générer</button>
         </div>
+        <div id="devCompanyActiveStatus" style="margin-top:12px;"></div>
         <div id="devCompanyCodesList" style="margin-top:12px;"></div>
       </div>
 
@@ -9805,6 +9806,13 @@ function goTo(viewName, siteId){
   }
   if(viewName === 'magasin'){ // MODULE — Magasin : pull immédiat à l'ouverture
     setTimeout(() => magasinPull().then(ok => { if(ok) magasinRender(); }), 50);
+  }
+  // v5.42.0 — Mode Développeur : rafraîchir la liste des codes entreprise
+  // (Code Creator + sélecteur "Entreprise consultée") à chaque entrée dans
+  // la vue, quel que soit le chemin (tuile, onglet nav, logo secret…) — pas
+  // seulement après avoir saisi le code dev dans l'ancienne modale.
+  if(viewName === 'dev' && typeof renderDevCompaniesList === 'function'){
+    setTimeout(() => renderDevCompaniesList(), 50);
   }
   // Maintenir la bannière canicule visible même en changeant de vue
   restoreCaniculeBanner();
@@ -27903,6 +27911,19 @@ function attemptAuthLogin(){
 
   // Connexion réussie (cas 1 ou compte créateur)
   if(auth) auth.locked = false;
+  // v5.42.0 — le compte créateur (a/1) est le point d'entrée "développeur
+  // sans code entreprise" : il donne accès au Mode Développeur (dont le
+  // nouveau sélecteur "Entreprise consultée", voir _renderDevCompanySwitcher)
+  // immédiatement, sans jamais avoir à saisir de code entreprise pour SE
+  // CONNECTER. Une fois dans le Mode Développeur, il reste néanmoins soumis
+  // au même cloisonnement que tout le monde pour LIRE des données : il doit
+  // choisir un code entreprise réel (existant dans le registre) via ce
+  // sélecteur avant que les onglets (Comptes/Pointages/Chantiers/...)
+  // affichent quoi que ce soit — voir devAccessIsDevUser().
+  if(isCreatorLogin){
+    window._creatorDevOverride = true;
+    if(typeof devAccessApplyNav === 'function') devAccessApplyNav();
+  }
   saveData();
   document.getElementById('authScreen').style.display = 'none';
   if(navigator.onLine){
@@ -31474,9 +31495,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.42.0';
+const APP_VERSION = '5.42.1';
 
 const CHANGELOG = [
+  {
+    version: '5.42.1',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🛠️', text: "Mode Développeur : le compte créateur (accès historique) donne maintenant accès direct au Mode Développeur sans code entreprise" },
+      { icon: '👁️', text: "Nouveau sélecteur « Entreprise consultée » dans Code Creator — bascule tout le panneau développeur (Comptes, Pointages, Machines, Chantiers, Test alertes, Photos) sur les données d'une entreprise précise, pour vérifier qu'un compte fraîchement créé est bien vierge ou dépanner un client" },
+    ],
+  },
   {
     version: '5.42.0',
     date: '18/09/2026',
@@ -38863,8 +38892,15 @@ async function devAccessSaveList(list){
   });
 }
 
-/* L'utilisateur connecté a-t-il is_dev = true ? (depuis le cache). */
+/* L'utilisateur connecté a-t-il is_dev = true ? (depuis le cache).
+   v5.42.0 — window._creatorDevOverride (posé par le login créateur a/1,
+   voir attemptAuthLogin) donne accès au Mode Développeur sans dépendre
+   d'un authId inscrit dans dev_users_v1 (le compte créateur n'a justement
+   pas d'authId). Ne donne AUCUN accès élargi côté données : voir
+   _supaSyncGateway/sync-gateway, qui continue d'exiger un code entreprise
+   réel pour toute clé non-globale, quel que soit ce flag. */
 function devAccessIsDevUser(){
+  if(window._creatorDevOverride) return true;
   const me = devAccessCurrentUser();
   if(!me) return false;
   return Array.isArray(_devUsersCache) && _devUsersCache.includes(me);
@@ -41569,18 +41605,66 @@ async function generateCompanyCode(){
   renderDevCompaniesList();
 }
 
+/* v5.42.0 — Sélecteur "Entreprise consultée" (Mode Développeur uniquement).
+   Change data.settings.companyCode, ce qui reclasse AUTOMATIQUEMENT le
+   périmètre de tous les appels supaFetch suivants (voir getCompanyCode/
+   _supaSyncGateway) : les onglets Comptes/Pointages/Machines/Chantiers/
+   Alertes/Photos du Mode Développeur lisent déjà leurs données via des
+   clés company-scopées (USERS_REGISTRY_KEY, COMPANY_SYNC_KEY, etc.), donc
+   changer ce code suffit à "basculer" tout le panneau sur une autre
+   entreprise, sans rien connaître d'autre que son code — utile pour
+   vérifier qu'un compte tout juste créé est bien vierge, ou pour dépanner
+   une entreprise donnée. Ne contourne PAS le cloisonnement serveur : le
+   code doit exister dans le registre (sync-gateway le revérifie à chaque
+   appel), exactement comme pour n'importe quel utilisateur normal. */
+function _renderDevCompanyActiveStatus(){
+  const el = document.getElementById('devCompanyActiveStatus');
+  if(!el) return;
+  const current = getCompanyCode();
+  el.innerHTML = current
+    ? `<div class="hint" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; background:var(--bg-elev); border-radius:8px;">
+         <span>👁️ Entreprise consultée : <strong style="color:var(--wood); font-family:monospace;">${escapeHtml(current)}</strong></span>
+         <button class="btn btn-outline btn-sm" style="flex-shrink:0; padding:4px 10px; font-size:11.5px;" onclick="devStopConsultingCompany()">Quitter</button>
+       </div>`
+    : `<div class="hint">Aucune entreprise sélectionnée — choisis un code ci-dessous pour consulter ses données (Comptes, Pointages, Chantiers, Alertes…).</div>`;
+}
+
+async function devConsultCompany(code){
+  if(!data.settings) data.settings = { weeklyHours: 35 };
+  data.settings.companyCode = String(code||'').trim().toUpperCase();
+  saveData();
+  showToast('Entreprise consultée : ' + data.settings.companyCode);
+  _renderDevCompanyActiveStatus();
+  renderDevCompaniesList();
+  if(typeof refreshDevPanel === 'function') refreshDevPanel();
+}
+
+function devStopConsultingCompany(){
+  if(!data.settings) data.settings = { weeklyHours: 35 };
+  data.settings.companyCode = '';
+  saveData();
+  showToast('Aucune entreprise consultée');
+  _renderDevCompanyActiveStatus();
+  renderDevCompaniesList();
+  if(typeof refreshDevPanel === 'function') refreshDevPanel();
+}
+
 async function renderDevCompaniesList(){
   const list = document.getElementById('devCompanyCodesList');
   if(!list) return;
+  _renderDevCompanyActiveStatus();
   list.innerHTML = '<div class="hint">Chargement…</div>';
   const companies = await _fetchCompaniesRegistry();
   if(!companies.length){
     list.innerHTML = '<div class="hint">Aucun code généré pour l\'instant.</div>';
     return;
   }
+  const current = getCompanyCode();
   const sorted = [...companies].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
-  list.innerHTML = sorted.map(c => `
-    <div class="card" style="padding:10px 14px; margin-bottom:8px;">
+  list.innerHTML = sorted.map(c => {
+    const isActive = c.code === current;
+    return `
+    <div class="card" style="padding:10px 14px; margin-bottom:8px; ${isActive ? 'border:1.5px solid var(--wood);' : ''}">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
         <div>
           <div style="font-weight:700;">${escapeHtml(c.name)}</div>
@@ -41588,8 +41672,12 @@ async function renderDevCompaniesList(){
         </div>
         <div style="font-family:monospace; font-size:18px; font-weight:800; letter-spacing:2px; color:var(--wood);">${escapeHtml(c.code)}</div>
       </div>
+      <button class="btn ${isActive ? 'btn-primary' : 'btn-outline'} btn-block" style="margin-top:8px; font-size:12.5px; padding:6px;" onclick="devConsultCompany('${escapeHtml(c.code)}')" ${isActive ? 'disabled' : ''}>
+        ${isActive ? '✓ Entreprise actuellement consultée' : '👁️ Consulter cette entreprise'}
+      </button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function normalizePhone(p){
