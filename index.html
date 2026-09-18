@@ -27589,20 +27589,19 @@ function isAppLocked(){
 
 /* Logique d'auth au démarrage :
    - Pas de profil → écran de bienvenue (inscription)
-   - Profil + PIN défini → écran PIN
-   - Profil + pas de PIN → écran identifiant/mdp/code entreprise
-   v5.42.5 — CORRECTIF SÉCURITÉ (demande de Rémi) : auparavant, une fois
-   connecté sur un appareil, l'app restait indéfiniment déverrouillée
-   (data.settings.auth.locked ne repassait à true qu'après une déconnexion
-   EXPLICITE via disconnectAppConfirmed(), ou si le réglage optionnel
-   "verrouillage auto" était activé). Ça permettait à quiconque rouvrant
-   l'app sur cet appareil d'accéder directement au compte resté connecté,
-   sans jamais redemander identifiant/mot de passe/code entreprise — y
-   compris en cas de changement d'utilisateur sur le même appareil. Le
-   verrouillage à chaque démarrage est désormais SYSTÉMATIQUE (plus besoin
-   d'activer "verrouillage auto") : dès qu'un profil existe, l'app repart
-   toujours de l'écran de connexion à chaque ouverture/rechargement — voir
-   aussi showAuthLoginForm() qui ne masque plus le champ code entreprise. */
+   - autoLock activé → verrouille automatiquement + demande PIN
+   - Profil + verrouillé (déconnexion explicite ou autoLock) + PIN → écran PIN
+   - Profil + verrouillé + pas de PIN → écran identifiant/mdp/code entreprise
+   - Profil + non verrouillé → accès direct sans rien afficher
+   v5.42.5 avait rendu ce verrouillage SYSTÉMATIQUE à chaque démarrage (plus
+   de session persistante du tout). v5.42.7 — REVERT à la demande de Rémi :
+   il veut que la session reste ouverte tant qu'on ne clique pas sur
+   "Se déconnecter" dans Paramètres (disconnectAppConfirmed) — fermer/rouvrir
+   l'app ne doit PAS redemander id/mdp/code entreprise. Le champ code
+   entreprise reste néanmoins toujours affiché+vérifié quand l'écran de
+   connexion s'affiche (déconnexion explicite ou autoLock), voir
+   showAuthLoginForm() et attemptAuthLogin() — cette partie-là n'est pas
+   concernée par le revert, seule la fréquence de verrouillage l'est. */
 function checkAuthOnStartup(){
   if(window._bypassAuthScreen) return false;
   const authScreen = document.getElementById('authScreen');
@@ -27613,8 +27612,8 @@ function checkAuthOnStartup(){
     return true;
   }
 
-  // Toujours verrouiller à chaque démarrage (voir note v5.42.5 ci-dessus).
-  if(data.settings.auth){
+  // Si le verrou automatique est activé, on verrouille à chaque démarrage
+  if(isAutoLockEnabled() && data.settings.auth){
     data.settings.auth.locked = true;
     saveData();
   }
@@ -31543,9 +31542,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.42.5';
+const APP_VERSION = '5.42.7';
 
 const CHANGELOG = [
+  {
+    version: '5.42.7',
+    date: '18/09/2026',
+    entries: [
+      { icon: '↩️', text: "Retour en arrière sur le verrouillage systématique de la v5.42.5 : la session reste maintenant connectée tant qu'on ne clique pas sur \"Se déconnecter\" dans Paramètres — fermer/rouvrir l'app ne redemande plus identifiant/mot de passe/code entreprise à chaque fois. Le code entreprise reste toujours demandé et vérifié lors d'une déconnexion explicite." },
+    ],
+  },
+  {
+    version: '5.42.6',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🎨', text: "Nouveau logo de l'app (casque de chantier jaune dans un cercle) — mis à jour sur toutes les icônes (écran d'accueil, PWA, favicon) et le logo d'en-tête" },
+    ],
+  },
   {
     version: '5.42.5',
     date: '18/09/2026',
