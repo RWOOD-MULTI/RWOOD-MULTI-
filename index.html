@@ -10336,6 +10336,13 @@ function toggleFavSite(id){
 }
 
 function renderSites(){
+  // v5.42.9 — renderSites() est appelée juste après CHAQUE succès de
+  // connexion/déverrouillage (login normal, PIN, changement de compte,
+  // compte créateur — voir attemptAuthLogin/attemptAccountSwitch/checkPin),
+  // donc c'est l'endroit central pour réafficher la bulle flottante
+  // Messagerie une fois qu'on est bien repassé côté app (elle est masquée
+  // pendant l'écran de connexion, voir _updateAlertBubbleFromCache()).
+  if(typeof _updateAlertBubbleFromCache === 'function') _updateAlertBubbleFromCache();
   const container = document.getElementById('chantiersList');
   const dashboard = document.getElementById('conducteurDashboard');
   // MODULE — PCDashboard : garde le bandeau chantier actif à jour (ajout/suppression de chantier).
@@ -31578,9 +31585,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.42.8';
+const APP_VERSION = '5.42.9';
 
 const CHANGELOG = [
+  {
+    version: '5.42.9',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif : la bulle flottante Messagerie ne s'affiche plus par-dessus l'écran de connexion/bienvenue — elle apparaissait auparavant même avant d'être connecté, dès qu'une vérification automatique des alertes tournait en tâche de fond quelques secondes après le lancement de l'app." },
+    ],
+  },
   {
     version: '5.42.8',
     date: '18/09/2026',
@@ -39942,7 +39956,11 @@ async function markAllAlertsRead(){
     _myAlertsUnreadCount = total;
     const bubble = document.getElementById('alertBubble');
     const badge = document.getElementById('alertBubbleBadge');
-    if(bubble) bubble.classList.toggle('show', _alertesMegaEnabled());
+    // v5.42.9 — même correctif que _updateAlertBubbleFromCache()/checkForNewAlerts() :
+    // ne jamais afficher la bulle par-dessus l'écran de connexion.
+    const authScreenEl = document.getElementById('authScreen');
+    const isOnAuthScreen = !!(authScreenEl && authScreenEl.style.display !== 'none');
+    if(bubble) bubble.classList.toggle('show', _alertesMegaEnabled() && !isOnAuthScreen);
     if(badge){
       if(total > 0){ badge.textContent = total; badge.style.display = 'block'; }
       else badge.style.display = 'none';
@@ -42931,7 +42949,15 @@ async function _checkForNewAlertsInner(){
     // Alertesmega — activable/désactivable par n'importe quel rôle (voir
     // Alertes → interrupteur). Par défaut activée pour tout le monde.
     const alertesMegaOn = _alertesMegaEnabled();
-    if(!alertesMegaOn){
+    // v5.42.9 — CORRECTIF : ce point d'entrée tourne automatiquement 4s après
+    // le lancement de l'app (voir le setTimeout plus haut), donc AVANT même
+    // que l'utilisateur se soit connecté — sans cette vérification, la bulle
+    // s'affichait par-dessus l'écran de connexion/bienvenue. data.settings
+    // (et donc alertesMegaEnabled) survit même quand l'app est verrouillée
+    // ou qu'aucun profil n'existe encore.
+    const authScreenEl = document.getElementById('authScreen');
+    const isOnAuthScreen = !!(authScreenEl && authScreenEl.style.display !== 'none');
+    if(!alertesMegaOn || isOnAuthScreen){
       bubble.classList.remove('show');
       return;
     }
@@ -44097,11 +44123,19 @@ function _updateAlertBubbleFromCache(){
   const bubble = document.getElementById('alertBubble');
   const badge = document.getElementById('alertBubbleBadge');
   if(!bubble) return;
+  // v5.42.9 — CORRECTIF : la bulle flottante Messagerie ne doit jamais
+  // s'afficher PAR-DESSUS l'écran de connexion/bienvenue/verrouillage — avant,
+  // elle restait visible dès que le réglage alertesMegaEnabled était activé,
+  // sans vérifier si l'utilisateur était réellement connecté (authScreen
+  // affiché ou non). data.settings (et donc alertesMegaEnabled) survit même
+  // quand l'app est verrouillée, d'où la bulle flottant par-dessus le login.
+  const authScreenEl = document.getElementById('authScreen');
+  const isOnAuthScreen = !!(authScreenEl && authScreenEl.style.display !== 'none');
   // Alertesmega reste TOUJOURS visible tant que le réglage est activé
   // (même règle que checkForNewAlerts/markAllAlertsRead) — le badge affiche
   // le nombre TOTAL d'alertes présentes (pas seulement les non-lues), il ne
   // baisse que quand une alerte est supprimée.
-  bubble.classList.toggle('show', _alertesMegaEnabled());
+  bubble.classList.toggle('show', _alertesMegaEnabled() && !isOnAuthScreen);
   if(total > 0){
     if(badge){ badge.textContent = total; badge.style.display = 'block'; }
   } else {
