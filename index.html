@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
 <title>RWOOD — Carnet de chantier</title>
 <link rel="manifest" href="manifest.json">
-<link rel="preconnect" href="https://espiotysnvxgjxrzkfta.supabase.co">
+<link rel="preconnect" href="https://cxuqrqqazuyzofaytynl.supabase.co">
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" as="script">
 <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
@@ -8403,8 +8403,8 @@ async function prepareDataForExport(src){
    - Supabase     = source de vérité partagée entre appareils
    ======================================= */
 
-const SUPA_URL = 'https://espiotysnvxgjxrzkfta.supabase.co';
-const SUPA_KEY = 'sb_publishable_Q8V0-K4HERye-JKhcbjm1Q_fyEsBxMu';
+const SUPA_URL = 'https://cxuqrqqazuyzofaytynl.supabase.co';
+const SUPA_KEY = 'sb_publishable_fcdnbv3OwELhnVWvUQmbfQ_W-Udb-i1';
 
 /* ═══════════════════════════════════════════════════════════════════
    CONFIG DROPBOX (sauvegarde auto des médias vers le Dropbox entreprise)
@@ -31306,9 +31306,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.90';
+const APP_VERSION = '5.41.90-vierge';
 
 const CHANGELOG = [
+  {
+    version: '5.41.90-vierge',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🆕', text: "Déploiement vierge — cette instance de RWOOD pointe vers un nouveau projet Supabase, entièrement vide (0 chantier, 0 contact, 0 heure), prête à démarrer de zéro pour une nouvelle entreprise" },
+    ],
+  },
   {
     version: '5.41.90',
     date: '18/09/2026',
