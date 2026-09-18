@@ -27911,16 +27911,27 @@ function attemptAuthLogin(){
 
   // Connexion réussie (cas 1 ou compte créateur)
   if(auth) auth.locked = false;
-  // v5.42.0 — le compte créateur (a/1) est le point d'entrée "développeur
+  // v5.42.2 — le compte créateur (a/1) est le point d'entrée "développeur
   // sans code entreprise" : il donne accès au Mode Développeur (dont le
-  // nouveau sélecteur "Entreprise consultée", voir _renderDevCompanySwitcher)
-  // immédiatement, sans jamais avoir à saisir de code entreprise pour SE
-  // CONNECTER. Une fois dans le Mode Développeur, il reste néanmoins soumis
-  // au même cloisonnement que tout le monde pour LIRE des données : il doit
-  // choisir un code entreprise réel (existant dans le registre) via ce
-  // sélecteur avant que les onglets (Comptes/Pointages/Chantiers/...)
-  // affichent quoi que ce soit — voir devAccessIsDevUser().
+  // sélecteur "Entreprise consultée", voir renderDevCompaniesList) sans
+  // jamais avoir à saisir de code entreprise pour SE CONNECTER. IMPORTANT :
+  // il repart TOUJOURS d'un état strictement vierge (seedData() + aucun
+  // code entreprise), quel que soit ce qui traînait déjà en local sur cet
+  // appareil (ex : un compte de test créé plus tôt dans la même fenêtre
+  // de navigation privée). Sans ce reset, a/1 se contentait de "déverrouiller"
+  // les données déjà chargées localement — ce qui pouvait ressembler à une
+  // fuite de données entre entreprises alors qu'il s'agissait seulement de
+  // données locales résiduelles jamais nettoyées entre deux tests. Une fois
+  // dans le Mode Développeur, il reste soumis au même cloisonnement que
+  // tout le monde pour LIRE des données : il doit choisir un code entreprise
+  // réel (existant dans le registre) via ce sélecteur avant que les onglets
+  // (Comptes/Pointages/Chantiers/...) affichent quoi que ce soit — voir
+  // devAccessIsDevUser().
   if(isCreatorLogin){
+    seedData();
+    if(!data.settings) data.settings = { weeklyHours: 35 };
+    data.settings.companyCode = '';
+    try{ localStorage.removeItem('rwood-data'); }catch(e){}
     window._creatorDevOverride = true;
     if(typeof devAccessApplyNav === 'function') devAccessApplyNav();
   }
@@ -31495,9 +31506,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.42.1';
+const APP_VERSION = '5.42.3';
 
 const CHANGELOG = [
+  {
+    version: '5.42.3',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🎨', text: "Correction des icônes du menu de navigation (Itinéraire, Contacts, Toiture, Zinc, Zone, Magasin, Chantier, Heures, Stock, Agenda, Galerie, Suivi, Dev) — plusieurs étaient absentes de ce déploiement et remplacées par un visuel générique" },
+    ],
+  },
+  {
+    version: '5.42.2',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif important : la connexion développeur (accès historique) repart désormais toujours d'un appareil strictement vierge (aucun chantier, aucun code entreprise) — avant, elle pouvait afficher les données déjà chargées localement sur l'appareil (ex : un compte de test créé plus tôt dans la même session de navigation), ce qui pouvait donner l'impression erronée d'une fuite de données entre entreprises" },
+    ],
+  },
   {
     version: '5.42.1',
     date: '18/09/2026',
