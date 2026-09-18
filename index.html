@@ -4039,7 +4039,7 @@
     <div class="field" id="authLoginCompanyCodeField" style="display:none;">
       <label>Code Entreprise <span style="color:var(--red);">*</span></label>
       <input type="text" id="authLoginCompanyCode" placeholder="Donné par ton patron ou le développeur" maxlength="10" style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
-      <div class="hint" style="margin-top:4px;">Nécessaire uniquement sur un nouvel appareil (pas encore associé à ton entreprise).</div>
+      <div class="hint" style="margin-top:4px;">Redemandé à chaque connexion, même sur un appareil déjà utilisé.</div>
     </div>
     <div class="hint" id="authLoginError" style="color:var(--danger); display:none; margin-bottom:10px;"></div>
     <button class="btn btn-primary btn-block" onclick="attemptAuthLogin()">Se connecter</button>
@@ -4103,7 +4103,11 @@
       <div class="calc-result-label">Mot de passe</div>
       <div class="calc-result-value" id="authConfirmPwd" style="font-size:20px;">—</div>
     </div>
-    <div class="hint" style="margin-bottom:20px; text-align:left;">Note ces informations quelque part — elles te serviront si tu te déconnectes ou si l'app se verrouille.</div>
+    <div class="card calc-result-card" style="margin-bottom:16px;">
+      <div class="calc-result-label">Code entreprise</div>
+      <div class="calc-result-value" id="authConfirmCompanyCode" style="font-size:20px;">—</div>
+    </div>
+    <div class="hint" style="margin-bottom:20px; text-align:left; color:var(--red); font-weight:600;">⚠️ Note bien ces 3 informations (identifiant, mot de passe, ET code entreprise) : elles te seront redemandées à CHAQUE reconnexion, même sur cet appareil.</div>
     <button class="btn btn-primary btn-block" onclick="finishAuthCreation()">Entrer dans l'application →</button>
   </div>
 
@@ -9694,7 +9698,14 @@ function seedData(){
   // entreprise réelle (ancien jeu "Bois Concept M" retiré) — chaque
   // nouveau compte/entreprise démarre d'un jeu strictement vide, quel que
   // soit le code entreprise utilisé.
-  const BASE = {"sites":[],"workers":[],"stock":[],"favorites":[],"logs":[],"attendance":[],"settings":{"auth":{},"payInfo":{"coefficient":"","tauxHoraire":null},"storage":{"photoMode":"internal","backupMode":"ask","photoFolderName":"","backupFolderName":"","stockMode":"internal","stockFolderName":"","payslipsMode":"internal","payslipsFolderName":"","documentsMode":"internal","documentsFolderName":""},"navOrder":["chantiers","calcul","heures","contacts","stock","itineraires","agenda","couverture","photos","ferme","zinc"],"teamName":"","myProfile":{},"navHidden":["ferme","contacts"],"truckName":"","depotCoords":null,"weeklyHours":35,"depotAddress":"","trajetBareme":[{"zone":"1A","maxKm":4,"minKm":0,"trajet":0.74},{"zone":"1B","maxKm":10,"minKm":4,"trajet":1.67},{"zone":"2","maxKm":20,"minKm":10,"trajet":3.45},{"zone":"3","maxKm":30,"minKm":20,"trajet":4.9},{"zone":"4","maxKm":40,"minKm":30,"trajet":6.37},{"zone":"5","maxKm":50,"minKm":40,"trajet":7.88}]},"contacts":[],"customRoles":[],"collapsedRoles":[],"itineraries":[],"tasks":[],"receivedFiches":[],"comptableSites":[],"tiles":[],"payslips":[],"trash":[],"zincProfiles":[],"trucks":[]};
+  // v5.42.5 — CORRECTIF : navHidden partait avec ["ferme","contacts"] en dur
+  // pour TOUT nouveau compte (hérité de l'ancienne app mono-entreprise où
+  // "Contacts" était volontairement masqué par défaut) — obligeant chaque
+  // nouvel utilisateur à aller dans Paramètres → onglets masqués pour
+  // réafficher Contacts. Désormais vide : tous les onglets sont visibles
+  // par défaut à la création de compte (voir aussi PATRON_NAV_PRESET_ENABLED,
+  // désactivé pour la même raison sur le préréglage patron/conducteur).
+  const BASE = {"sites":[],"workers":[],"stock":[],"favorites":[],"logs":[],"attendance":[],"settings":{"auth":{},"payInfo":{"coefficient":"","tauxHoraire":null},"storage":{"photoMode":"internal","backupMode":"ask","photoFolderName":"","backupFolderName":"","stockMode":"internal","stockFolderName":"","payslipsMode":"internal","payslipsFolderName":"","documentsMode":"internal","documentsFolderName":""},"navOrder":["chantiers","calcul","heures","contacts","stock","itineraires","agenda","couverture","photos","ferme","zinc"],"teamName":"","myProfile":{},"navHidden":[],"truckName":"","depotCoords":null,"weeklyHours":35,"depotAddress":"","trajetBareme":[{"zone":"1A","maxKm":4,"minKm":0,"trajet":0.74},{"zone":"1B","maxKm":10,"minKm":4,"trajet":1.67},{"zone":"2","maxKm":20,"minKm":10,"trajet":3.45},{"zone":"3","maxKm":30,"minKm":20,"trajet":4.9},{"zone":"4","maxKm":40,"minKm":30,"trajet":6.37},{"zone":"5","maxKm":50,"minKm":40,"trajet":7.88}]},"contacts":[],"customRoles":[],"collapsedRoles":[],"itineraries":[],"tasks":[],"receivedFiches":[],"comptableSites":[],"tiles":[],"payslips":[],"trash":[],"zincProfiles":[],"trucks":[]};
   Object.assign(data, BASE);
   // Protéger les données de compte — ne jamais les écraser avec les valeurs BASE vides
   if(!data.settings) data.settings = {};
@@ -27578,10 +27589,20 @@ function isAppLocked(){
 
 /* Logique d'auth au démarrage :
    - Pas de profil → écran de bienvenue (inscription)
-   - autoLock activé → verrouille automatiquement + demande PIN
-   - Profil + verrouillé + PIN → écran PIN
-   - Profil + verrouillé + pas de PIN → écran identifiant/mdp
-   - Profil + non verrouillé → accès direct sans rien afficher */
+   - Profil + PIN défini → écran PIN
+   - Profil + pas de PIN → écran identifiant/mdp/code entreprise
+   v5.42.5 — CORRECTIF SÉCURITÉ (demande de Rémi) : auparavant, une fois
+   connecté sur un appareil, l'app restait indéfiniment déverrouillée
+   (data.settings.auth.locked ne repassait à true qu'après une déconnexion
+   EXPLICITE via disconnectAppConfirmed(), ou si le réglage optionnel
+   "verrouillage auto" était activé). Ça permettait à quiconque rouvrant
+   l'app sur cet appareil d'accéder directement au compte resté connecté,
+   sans jamais redemander identifiant/mot de passe/code entreprise — y
+   compris en cas de changement d'utilisateur sur le même appareil. Le
+   verrouillage à chaque démarrage est désormais SYSTÉMATIQUE (plus besoin
+   d'activer "verrouillage auto") : dès qu'un profil existe, l'app repart
+   toujours de l'écran de connexion à chaque ouverture/rechargement — voir
+   aussi showAuthLoginForm() qui ne masque plus le champ code entreprise. */
 function checkAuthOnStartup(){
   if(window._bypassAuthScreen) return false;
   const authScreen = document.getElementById('authScreen');
@@ -27592,8 +27613,8 @@ function checkAuthOnStartup(){
     return true;
   }
 
-  // Si le verrou automatique est activé, on verrouille à chaque démarrage
-  if(isAutoLockEnabled() && data.settings.auth){
+  // Toujours verrouiller à chaque démarrage (voir note v5.42.5 ci-dessus).
+  if(data.settings.auth){
     data.settings.auth.locked = true;
     saveData();
   }
@@ -27619,14 +27640,15 @@ function showAuthLoginForm(){
   document.getElementById('authLoginId').value = '';
   document.getElementById('authLoginPwd').value = '';
   document.getElementById('authLoginError').style.display = 'none';
-  // v5.42.0 — le code entreprise n'est demandé au login que si ce device
-  // n'en a pas déjà un enregistré localement (premier login sur un device
-  // neuf) : sinon on réutilise silencieusement celui déjà connu.
+  // v5.42.5 — le code entreprise est désormais TOUJOURS redemandé à la
+  // connexion (avant : masqué et réutilisé silencieusement si déjà connu
+  // sur ce device — voir checkAuthOnStartup() pour le contexte complet de
+  // ce correctif). Il est vérifié dans attemptAuthLogin() quel que soit le
+  // cas (même compte déjà connu sur ce device, ou changement de compte).
   const codeField = document.getElementById('authLoginCompanyCodeField');
   const codeInput = document.getElementById('authLoginCompanyCode');
   if(codeField && codeInput){
-    const known = getCompanyCode();
-    codeField.style.display = known ? 'none' : 'block';
+    codeField.style.display = 'block';
     codeInput.value = '';
   }
 }
@@ -27792,6 +27814,7 @@ async function submitAuthCreate(){
   saveData();
   document.getElementById('authConfirmId').textContent = authId;
   document.getElementById('authConfirmPwd').textContent = authPwd;
+  document.getElementById('authConfirmCompanyCode').textContent = companyCode || '—';
   _authShowOnly('authCreatedConfirm');
 }
 
@@ -27858,9 +27881,28 @@ function attemptAuthLogin(){
   const errorEl  = document.getElementById('authLoginError');
   const isCreatorLogin = (inputId === 'a' && inputPwd === '1');
 
+  // v5.42.5 — le code entreprise est désormais obligatoire et vérifié à
+  // CHAQUE connexion (voir showAuthLoginForm()/checkAuthOnStartup()), y
+  // compris quand l'identifiant correspond déjà au compte connu localement
+  // (Cas 1 ci-dessous) — avant ce correctif, seul le Cas 2 (changement de
+  // compte sur un device neuf) le demandait. Le compte créateur (a/1) reste
+  // exempté : il n'est lié à aucune entreprise par construction.
+  if(!isCreatorLogin){
+    const typedCode = (document.getElementById('authLoginCompanyCode').value || '').trim().toUpperCase();
+    if(!typedCode){
+      errorEl.textContent = "Le code entreprise est obligatoire pour te connecter";
+      errorEl.style.display = 'block'; return;
+    }
+  }
+
   if(!isCreatorLogin){
     // ── Cas 1 : identifiant correspond au compte local ────────────────────────
     if(auth && inputId === auth.authId){
+      const typedCode = (document.getElementById('authLoginCompanyCode').value || '').trim().toUpperCase();
+      if(typedCode !== getCompanyCode()){
+        errorEl.textContent = "Code entreprise incorrect";
+        errorEl.style.display = 'block'; return;
+      }
       if(!auth.authPwd){
         // Ancien compte sans mot de passe → définir le mdp saisi
         if(!inputPwd){
@@ -27886,25 +27928,19 @@ function attemptAuthLogin(){
         errorEl.textContent = "Identifiant ou mot de passe incorrect";
         errorEl.style.display = 'block'; return;
       }
-      // v5.42.0 — si ce device n'a pas encore de code entreprise connu
-      // (premier login sur un device neuf), il est obligatoire ici : c'est
-      // lui qui détermine dans quel périmètre entreprise chercher le compte
-      // (voir _supaSyncGateway). S'il est déjà connu localement, on le
-      // réutilise silencieusement (champ masqué, voir showAuthLoginForm).
-      let wasFreshCompanyCodeGuess = false;
-      if(!getCompanyCode()){
-        const codeInput = document.getElementById('authLoginCompanyCode');
-        const loginCode = codeInput ? codeInput.value.trim().toUpperCase() : '';
-        if(!loginCode){
-          errorEl.textContent = "Le code entreprise est obligatoire sur un nouvel appareil";
-          errorEl.style.display = 'block'; return;
-        }
-        if(!data.settings) data.settings = { weeklyHours: 35 };
-        data.settings.companyCode = loginCode;
-        wasFreshCompanyCodeGuess = true;
-      }
+      // v5.42.5 — le code entreprise saisi est TOUJOURS pris en compte ici
+      // (champ désormais toujours affiché et obligatoire, voir plus haut) :
+      // c'est lui qui détermine dans quel périmètre entreprise chercher le
+      // compte (voir _supaSyncGateway). On l'applique même si ce device en
+      // avait déjà un connu — l'utilisateur peut légitimement vouloir se
+      // connecter à un compte d'une AUTRE entreprise sur ce même appareil.
+      const codeInput = document.getElementById('authLoginCompanyCode');
+      const loginCode = codeInput ? codeInput.value.trim().toUpperCase() : '';
+      const previousCode = getCompanyCode();
+      if(!data.settings) data.settings = { weeklyHours: 35 };
+      data.settings.companyCode = loginCode;
       // Tenter de récupérer ce compte depuis Supabase
-      attemptAccountSwitch(inputId, inputPwd, wasFreshCompanyCodeGuess);
+      attemptAccountSwitch(inputId, inputPwd, previousCode);
       return;
     }
   }
@@ -27947,11 +27983,12 @@ function attemptAuthLogin(){
 }
 
 /* Changement de compte : cherche les données de l'autre utilisateur sur Supabase.
-   wasFreshCompanyCodeGuess (v5.42.0) : true si le code entreprise utilisé pour
-   cette tentative vient d'être saisi à l'instant (device neuf) plutôt que
-   déjà connu de ce device — sur échec, on l'efface pour permettre de
-   réessayer avec un autre code au lieu de rester bloqué dessus. */
-async function attemptAccountSwitch(userId, pwd, wasFreshCompanyCodeGuess){
+   previousCode (v5.42.5, ex-wasFreshCompanyCodeGuess) : le code entreprise
+   qui était connu sur ce device AVANT cette tentative (peut être vide) —
+   sur échec, on restaure ce code plutôt que de garder celui, invalide,
+   qui vient d'être saisi, pour ne pas casser un login ultérieur normal
+   sur le compte déjà associé à ce device. */
+async function attemptAccountSwitch(userId, pwd, previousCode){
   const errorEl = document.getElementById('authLoginError');
   errorEl.textContent = "Recherche du compte sur le cloud…";
   errorEl.style.display = 'block';
@@ -27960,7 +27997,7 @@ async function attemptAccountSwitch(userId, pwd, wasFreshCompanyCodeGuess){
   const fail = (msg) => {
     errorEl.textContent = msg;
     errorEl.style.color = 'var(--red)';
-    if(wasFreshCompanyCodeGuess && data.settings) data.settings.companyCode = '';
+    if(data.settings) data.settings.companyCode = previousCode || '';
   };
 
   if(!navigator.onLine){
@@ -31506,9 +31543,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.42.4';
+const APP_VERSION = '5.42.5';
 
 const CHANGELOG = [
+  {
+    version: '5.42.5',
+    date: '18/09/2026',
+    entries: [
+      { icon: '🔒', text: "Correctif sécurité important : la connexion redemande désormais systématiquement identifiant, mot de passe ET code entreprise à chaque ouverture de l'app (avant : un appareil déjà connecté restait déverrouillé indéfiniment tant qu'on ne se déconnectait pas explicitement, et le code entreprise n'était demandé que sur un appareil neuf) — note bien ces 3 informations à la création de compte, elles seront redemandées à chaque reconnexion" },
+      { icon: '👁️', text: "Tous les onglets de la barre de navigation sont désormais visibles par défaut pour tous les rôles (patron/conducteur inclus) — avant, un préréglage masquait automatiquement une partie des onglets à la création de compte, obligeant à aller dans Paramètres pour les réafficher un par un" },
+    ],
+  },
   {
     version: '5.42.4',
     date: '18/09/2026',
@@ -48580,8 +48625,14 @@ function dedupBuildMap(sources){
    Désactivation : mettre PATRON_NAV_PRESET_ENABLED=false, ou vider
    data.settings.navHidden. Retrait : supprimer ce bloc + l'appel
    patronNavPreset() (accroche [navpreset]).
+   v5.42.5 — DÉSACTIVÉ à la demande de Rémi : ce préréglage masquait des
+   onglets par défaut à la création de compte patron/conducteur, obligeant
+   à aller dans Paramètres → onglets masqués pour les réafficher un par un.
+   Tous les onglets restent désormais visibles par défaut pour tous les
+   rôles, comme pour chef/ouvrier/comptable. Le code est conservé intact
+   (juste inactif) si on veut un jour le réactiver.
    ═══════════════════════════════════════════════════════════════════ */
-let PATRON_NAV_PRESET_ENABLED = true;
+let PATRON_NAV_PRESET_ENABLED = false;
 
 /* Onglets conservés dans la barre pour patron/conducteur (9 principaux). */
 const PATRON_NAV_KEEP = ['chantiers','heures','stock','contacts','agenda','magasin','notesdashboard','suivi','alertes-conducteur','zone-chantier'];
