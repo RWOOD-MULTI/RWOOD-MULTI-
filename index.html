@@ -27227,8 +27227,18 @@ function requestNotifPermission(){
   });
 }
 
-/* ── Clé publique VAPID (doit correspondre à celle de la Edge Function) ── */
-const VAPID_PUBLIC_KEY = 'BGIdnQ_HCFwjta_sQTyKedGfobafhL9lS-skKcbdJX2-lTqbm00TgBDt5dKT8Ek5hKspaIbh9vyVHYuUZ2f7oQM';
+/* ── Clé publique VAPID (doit correspondre à celle de la Edge Function) ──
+   v5.43.0 — REGÉNÉRÉE pour le nouveau projet Supabase multi-entreprise :
+   l'ancienne clé était celle du projet Supabase d'origine (mono-entreprise)
+   et sa clé PRIVÉE correspondante n'a jamais été transmise dans cette
+   conversation (elle vivait uniquement dans les secrets de l'ancienne Edge
+   Function, illisibles après coup) — impossible de la réutiliser ici. Cette
+   nouvelle paire doit être configurée dans les secrets de la nouvelle Edge
+   Function "send-push" (VAPID_PUBLIC_KEY doit être IDENTIQUE à cette
+   constante). Le code existant (subscribeToPush) gère déjà proprement le
+   changement de clé : tout abonnement créé avec l'ancienne clé est
+   automatiquement jeté et recréé avec la nouvelle au prochain chargement. */
+const VAPID_PUBLIC_KEY = 'BG4QDuhg1pc9zNp__7_kizuhuYO46WTu3i9r438JJO28CEB_2FCveL1BdjmCK7N6JfZawFDXu87ZSend10zyzeo';
 
 function urlBase64ToUint8Array(base64String){
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -31585,9 +31595,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.42.9';
+const APP_VERSION = '5.43.0';
 
 const CHANGELOG = [
+  {
+    version: '5.43.0',
+    date: '19/09/2026',
+    entries: [
+      { icon: '🔔', text: "Mise en place du système de notifications push sur le nouveau projet Supabase multi-entreprise — nouvelle Edge Function \"send-push\" à déployer côté serveur (voir les instructions fournies), avec une nouvelle paire de clés VAPID (l'ancienne ne peut pas être réutilisée)." },
+    ],
+  },
   {
     version: '5.42.9',
     date: '18/09/2026',
